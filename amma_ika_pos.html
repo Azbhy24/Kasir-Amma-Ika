@@ -235,6 +235,16 @@ tr:hover td{background:rgba(59,130,246,.04)}
 .kat-del-btn:hover{color:var(--danger)}
 .kat-add-row{display:flex;gap:8px}
 .kat-add-row .form-input{flex:1}
+.bulk-tools{display:flex;flex-direction:column;gap:10px}
+.bulk-note{background:var(--bg3);border:1px dashed var(--border);border-radius:var(--radius-sm);padding:10px 12px;font-size:12px;line-height:1.6;color:var(--txt2)}
+.bulk-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.btn-submit.small{margin-top:0;padding:10px 12px;font-size:12px}
+.btn-submit.warn{background:rgba(245,158,11,.14);color:var(--warning);box-shadow:none;border:1px solid rgba(245,158,11,.28)}
+.btn-submit.info{background:rgba(59,130,246,.12);color:var(--accent);box-shadow:none;border:1px solid rgba(59,130,246,.24)}
+.inline-hint{margin-top:6px;font-size:11px;color:var(--txt2);line-height:1.5}
+.advanced-toggle{background:none;border:none;color:var(--accent);font:inherit;font-size:12px;font-weight:800;cursor:pointer;padding:0;text-align:left}
+.advanced-fields{display:none}
+.advanced-fields.show{display:contents}
 
 /* MODAL OVERLAY */
 .modal-overlay{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.7);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:20px;opacity:0;pointer-events:none;transition:opacity .25s}
@@ -368,6 +378,26 @@ tr:hover td{background:rgba(59,130,246,.04)}
       </div>
     </div>
 
+    <!-- Data Massal -->
+    <div class="admin-section">
+      <div class="admin-section-title">🗄️ Data Massal & Backup</div>
+      <div class="bulk-tools">
+        <div class="bulk-note">
+          Pakai file CSV untuk masukin banyak barang sekaligus. Paling gampang cukup isi <strong>nama, harga, stok</strong>.<br>
+          Kolom lain seperti kategori, icon, warning, dan ID akan dibantu otomatis. Import update akan memperbarui barang lama kalau nama atau ID sama.
+        </div>
+        <div class="bulk-actions">
+          <button class="btn-submit info small" onclick="downloadTemplateCsv()">📥 Download Template CSV</button>
+          <button class="btn-submit small" onclick="triggerImportProduk('merge')">📂 Import CSV Update</button>
+          <button class="btn-submit warn small" onclick="triggerImportProduk('replace')">♻️ Import CSV Ganti Semua</button>
+          <button class="btn-submit neutral small" onclick="exportBackup()">💾 Backup JSON</button>
+          <button class="btn-submit neutral small" onclick="triggerRestoreBackup()">🔁 Pulihkan Backup</button>
+        </div>
+        <input type="file" id="file-import-produk" accept=".csv,text/csv" hidden onchange="handleImportProduk(event)">
+        <input type="file" id="file-restore-backup" accept=".json,application/json" hidden onchange="handleRestoreBackup(event)">
+      </div>
+    </div>
+
     <!-- Form Produk -->
     <div class="admin-section">
       <div class="admin-section-title" id="form-produk-title">➕ Tambah Produk</div>
@@ -376,6 +406,7 @@ tr:hover td{background:rgba(59,130,246,.04)}
           <label>Nama Produk</label>
           <input class="form-input" id="inp-nama" placeholder="cth: Beras Premium 5kg" type="text" oninput="onNamaInput(this.value)">
           <div id="emoji-suggestions" class="emoji-suggestions"></div>
+          <div class="inline-hint" id="auto-meta-hint">Sistem akan bantu isi icon, kategori, dan batas stok otomatis.</div>
         </div>
         <div class="form-field">
           <label>Harga (Rp)</label>
@@ -385,15 +416,18 @@ tr:hover td{background:rgba(59,130,246,.04)}
           <label>Stok Awal</label>
           <input class="form-input" id="inp-stok" placeholder="50" type="number" inputmode="numeric">
         </div>
-        <div class="form-field">
+        <div class="form-field full">
+          <button type="button" class="advanced-toggle" id="advanced-toggle" onclick="toggleAdvancedFields()">+ Opsi lanjutan</button>
+        </div>
+        <div class="form-field advanced-fields" id="advanced-icon-field">
           <label>Icon Emoji</label>
           <input class="form-input" id="inp-icon" placeholder="🌾" maxlength="4" style="font-size:20px">
         </div>
-        <div class="form-field">
+        <div class="form-field advanced-fields" id="advanced-kat-field">
           <label>Kategori</label>
           <select class="form-input" id="inp-kat-produk"><option value="">-- Pilih --</option></select>
         </div>
-        <div class="form-field">
+        <div class="form-field advanced-fields" id="advanced-warn-field">
           <label>Batas Warning Stok</label>
           <input class="form-input" id="inp-warn" placeholder="10" type="number" inputmode="numeric">
         </div>
@@ -522,6 +556,8 @@ const sv=(k,v)=>localStorage.setItem(k,JSON.stringify(v));
 let cart={}, produk=[], activeKat='Semua', _struktx=null;
 let bayarNominalInput = 0;
 let bayarTotalSementara = 0;
+let importProdukMode='merge';
+let advancedFieldsOpen=false;
 
 // ── SEED ──
 function seedData(){
@@ -538,6 +574,307 @@ function seedData(){
   ]);
   if(!ld(K.HT)) sv(K.HT,[]);
   if(!ld(K.H))  sv(K.H,[]);
+}
+
+function nextProdukId(list){
+  const ids=(list||[]).map(p=>parseInt(String(p.id||'').replace('P',''))).filter(n=>!isNaN(n));
+  return 'P'+String((ids.length?Math.max(...ids):0)+1).padStart(3,'0');
+}
+
+function syncKategoriDariProduk(list){
+  const kategori=ld(K.KAT)||[];
+  (list||[]).forEach(p=>{
+    const namaKat=(p.kategori||'').trim();
+    if(namaKat&&!kategori.includes(namaKat)) kategori.push(namaKat);
+  });
+  sv(K.KAT,kategori);
+}
+
+function parseNumberInput(v,fallback=0){
+  const cleaned=String(v??'').replace(/[^\d-]/g,'');
+  const n=parseInt(cleaned,10);
+  return Number.isNaN(n)?fallback:n;
+}
+
+function deriveKategoriFromNama(nama){
+  const n=String(nama||'').toLowerCase();
+  if(/beras|gula|tepung|telur/.test(n)) return 'Bahan Pokok';
+  if(/mie|mi |indomie|sarimi|snack|biskuit|roti/.test(n)) return 'Mie & Snack';
+  if(/minyak|garam|bawang|cabai|tomat|kecap|saos|santan/.test(n)) return 'Minyak & Bumbu';
+  if(/kopi|teh|susu|air|minum|sirup|es|jus/.test(n)) return 'Minuman';
+  if(/sabun|shampo|sampo|detergen|tisu|pembalut/.test(n)) return 'Kebersihan';
+  return 'Lainnya';
+}
+
+function deriveIconFromNama(nama){
+  const words=String(nama||'').toLowerCase().split(/\s+/);
+  let found=[];
+  words.forEach(w=>Object.keys(EMAP).forEach(k=>{
+    if(w.length>1&&(w.includes(k)||k.includes(w))) EMAP[k].forEach(e=>{if(!found.includes(e)) found.push(e);});
+  }));
+  return found[0]||'📦';
+}
+
+function getFormProdukPayload(){
+  const nama=document.getElementById('inp-nama').value.trim();
+  const harga=parseInt(document.getElementById('inp-harga').value);
+  const stok=parseInt(document.getElementById('inp-stok').value);
+  const iconManual=document.getElementById('inp-icon').value.trim();
+  const katManual=document.getElementById('inp-kat-produk').value;
+  const warnManual=parseInt(document.getElementById('inp-warn').value);
+  return {
+    nama,
+    harga,
+    stok,
+    icon:iconManual||deriveIconFromNama(nama),
+    kategori:katManual||deriveKategoriFromNama(nama),
+    warnStok:Number.isNaN(warnManual)?10:warnManual,
+  };
+}
+
+function updateAutoMetaHint(){
+  const nama=document.getElementById('inp-nama').value.trim();
+  const el=document.getElementById('auto-meta-hint');
+  if(!el) return;
+  if(!nama){
+    el.textContent='Sistem akan bantu isi icon, kategori, dan batas stok otomatis.';
+    return;
+  }
+  el.textContent=`Otomatis: ${deriveIconFromNama(nama)} • ${deriveKategoriFromNama(nama)} • warning stok 10`;
+}
+
+function setAdvancedFields(show){
+  advancedFieldsOpen=!!show;
+  ['advanced-icon-field','advanced-kat-field','advanced-warn-field'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el) el.classList.toggle('show',advancedFieldsOpen);
+  });
+  const btn=document.getElementById('advanced-toggle');
+  if(btn) btn.textContent=advancedFieldsOpen?'− Sembunyikan opsi lanjutan':'+ Opsi lanjutan';
+}
+
+function toggleAdvancedFields(){
+  setAdvancedFields(!advancedFieldsOpen);
+}
+
+function parseCsvLine(line,delimiter){
+  const out=[];
+  let cur='', quoted=false;
+  for(let i=0;i<line.length;i++){
+    const ch=line[i];
+    if(ch==='"'){
+      if(quoted&&line[i+1]==='"'){cur+='"';i++;}
+      else quoted=!quoted;
+    } else if(ch===delimiter&&!quoted){
+      out.push(cur.trim());
+      cur='';
+    } else {
+      cur+=ch;
+    }
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+function detectDelimiter(headerLine){
+  const delimiters=[';','\t',',','|'];
+  let winner=',', maxCount=-1;
+  delimiters.forEach(delim=>{
+    const count=headerLine.split(delim).length;
+    if(count>maxCount){
+      maxCount=count;
+      winner=delim;
+    }
+  });
+  return winner;
+}
+
+function normalizeHeaderKey(key){
+  return String(key||'').toLowerCase().replace(/\s+/g,'').replace(/[^a-z0-9_]/g,'');
+}
+
+function parseProdukCsv(text){
+  const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/).map(line=>line.trim()).filter(Boolean);
+  if(lines.length<2) throw new Error('File CSV masih kosong atau hanya berisi header.');
+  const delimiter=detectDelimiter(lines[0]);
+  const headers=parseCsvLine(lines[0],delimiter).map(normalizeHeaderKey);
+  const idx={
+    id:headers.findIndex(h=>['id','kode','kodebarang','sku'].includes(h)),
+    nama:headers.findIndex(h=>['nama','namaproduk','produk','barang'].includes(h)),
+    harga:headers.findIndex(h=>['harga','hargajual','price'].includes(h)),
+    stok:headers.findIndex(h=>['stok','stock','qty'].includes(h)),
+    kategori:headers.findIndex(h=>['kategori','category'].includes(h)),
+    icon:headers.findIndex(h=>['icon','emoji','ikon'].includes(h)),
+    warnStok:headers.findIndex(h=>['warnstok','bataswarning','warningstok','minimalstok'].includes(h)),
+  };
+  if(idx.nama===-1||idx.harga===-1||idx.stok===-1) throw new Error('Header wajib minimal: nama, harga, stok.');
+
+  return lines.slice(1).map((line,rowIndex)=>{
+    const cols=parseCsvLine(line,delimiter);
+    const nama=(cols[idx.nama]||'').trim();
+    if(!nama) return null;
+    const harga=parseNumberInput(cols[idx.harga],NaN);
+    const stok=parseNumberInput(cols[idx.stok],NaN);
+    if(Number.isNaN(harga)||Number.isNaN(stok)) throw new Error(`Baris ${rowIndex+2}: harga atau stok tidak valid.`);
+    return {
+      id:idx.id>=0?(cols[idx.id]||'').trim():'',
+      nama,
+      harga,
+      stok,
+      kategori:idx.kategori>=0?(cols[idx.kategori]||'').trim():'',
+      icon:idx.icon>=0?(cols[idx.icon]||'').trim():'',
+      warnStok:idx.warnStok>=0?parseNumberInput(cols[idx.warnStok],10):10,
+    };
+  }).filter(Boolean);
+}
+
+function normalizeProdukInput(item,fallbackId){
+  const nama=(item.nama||'').trim();
+  return {
+    id:(item.id||fallbackId||'').trim(),
+    nama,
+    harga:parseNumberInput(item.harga,0),
+    stok:parseNumberInput(item.stok,0),
+    kategori:(item.kategori||'').trim()||deriveKategoriFromNama(nama),
+    icon:(item.icon||'').trim()||deriveIconFromNama(nama),
+    warnStok:Math.max(1,parseNumberInput(item.warnStok,10)),
+  };
+}
+
+function refreshAllViews(){
+  renderKatFilter();
+  renderProducts();
+  renderCart();
+  renderAdmin();
+}
+
+function downloadTextFile(filename,content,type){
+  const blob=new Blob([content],{type:type||'text/plain;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download=filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
+function downloadTemplateCsv(){
+  const rows=[
+    ['nama','harga','stok'],
+    ['Beras Premium 5kg','65000','25'],
+    ['Minyak Goreng 1L','18000','12'],
+    ['Mie Instan Soto','3500','48'],
+  ];
+  const csv=rows.map(row=>row.join(';')).join('\n');
+  downloadTextFile('template_produk_warung.csv',csv,'text/csv;charset=utf-8');
+  showToast('Template CSV berhasil diunduh');
+}
+
+function triggerImportProduk(mode){
+  importProdukMode=mode||'merge';
+  const input=document.getElementById('file-import-produk');
+  input.value='';
+  input.click();
+}
+
+function handleImportProduk(event){
+  const file=event.target.files&&event.target.files[0];
+  if(!file) return;
+  const reader=new FileReader();
+  reader.onload=()=>{
+    try{
+      const parsed=parseProdukCsv(String(reader.result||''));
+      if(!parsed.length) throw new Error('Tidak ada produk yang bisa diimport.');
+      const existing=importProdukMode==='replace'?[]:(ld(K.P)||[]);
+      const byId=new Map(existing.map(p=>[String(p.id||'').toLowerCase(),p]));
+      const byNama=new Map(existing.map(p=>[String(p.nama||'').toLowerCase(),p]));
+      const merged=[...existing];
+      let added=0, updated=0;
+
+      parsed.forEach(raw=>{
+        const found=(raw.id&&byId.get(raw.id.toLowerCase()))||byNama.get(raw.nama.toLowerCase());
+        if(found){
+          const clean=normalizeProdukInput({...found,...raw},found.id);
+          Object.assign(found,clean);
+          byId.set(clean.id.toLowerCase(),found);
+          byNama.set(clean.nama.toLowerCase(),found);
+          updated++;
+        } else {
+          const clean=normalizeProdukInput(raw,nextProdukId(merged));
+          merged.push(clean);
+          byId.set(clean.id.toLowerCase(),clean);
+          byNama.set(clean.nama.toLowerCase(),clean);
+          added++;
+        }
+      });
+
+      sv(K.P,merged);
+      syncKategoriDariProduk(merged);
+      cart={};
+      refreshAllViews();
+      showToast(`Import selesai: ${added} baru, ${updated} diperbarui`);
+    }catch(err){
+      alert('Import gagal.\n'+err.message);
+    }finally{
+      event.target.value='';
+    }
+  };
+  reader.readAsText(file);
+}
+
+function exportBackup(){
+  const backup={
+    app:'Warung Amma Ika POS',
+    version:3,
+    exportedAt:new Date().toISOString(),
+    data:{
+      produk:ld(K.P)||[],
+      history:ld(K.H)||[],
+      hutang:ld(K.HT)||[],
+      kategori:ld(K.KAT)||[],
+      theme:ld(K.TH)||'dark',
+    }
+  };
+  downloadTextFile(`backup-warung-${today()}.json`,JSON.stringify(backup,null,2),'application/json;charset=utf-8');
+  showToast('Backup JSON berhasil diunduh');
+}
+
+function triggerRestoreBackup(){
+  const input=document.getElementById('file-restore-backup');
+  input.value='';
+  input.click();
+}
+
+function handleRestoreBackup(event){
+  const file=event.target.files&&event.target.files[0];
+  if(!file) return;
+  const reader=new FileReader();
+  reader.onload=()=>{
+    try{
+      const raw=JSON.parse(String(reader.result||'{}'));
+      const data=raw&&raw.data?raw.data:raw;
+      if(!data||!Array.isArray(data.produk)) throw new Error('Format backup tidak dikenali.');
+      if(!confirm('Pulihkan backup ini? Data saat ini akan diganti.')) return;
+      const normalized=(data.produk||[]).map((p,i)=>normalizeProdukInput(p,p.id||('P'+String(i+1).padStart(3,'0'))));
+      sv(K.P,normalized);
+      sv(K.H,Array.isArray(data.history)?data.history:[]);
+      sv(K.HT,Array.isArray(data.hutang)?data.hutang:[]);
+      sv(K.KAT,Array.isArray(data.kategori)?data.kategori:[]);
+      if(data.theme) sv(K.TH,data.theme);
+      syncKategoriDariProduk(normalized);
+      cart={};
+      initTheme();
+      refreshAllViews();
+      showToast('Backup berhasil dipulihkan');
+    }catch(err){
+      alert('Restore gagal.\n'+err.message);
+    }finally{
+      event.target.value='';
+    }
+  };
+  reader.readAsText(file);
 }
 
 // ── FORMAT ──
@@ -590,6 +927,7 @@ function onNamaInput(v){
   words.forEach(w=>Object.keys(EMAP).forEach(k=>{if(w.length>1&&(w.includes(k)||k.includes(w)))EMAP[k].forEach(e=>{if(!found.includes(e))found.push(e)})}));
   const el=document.getElementById('emoji-suggestions');
   el.innerHTML=found.length&&v.trim()?'<span class="emoji-sug-label">Saran: </span>'+found.map(e=>`<button class="emoji-sug-btn" onclick="pickEmoji('${e}')">${e}</button>`).join(''):'';
+  updateAutoMetaHint();
 }
 function pickEmoji(e){document.getElementById('inp-icon').value=e;showToast('Emoji dipilih: '+e);}
 
@@ -977,28 +1315,23 @@ function renderAdmin(){
 
 // ── FORM PRODUK ──
 function submitProduk(){
-  const nama=document.getElementById('inp-nama').value.trim();
-  const harga=parseInt(document.getElementById('inp-harga').value);
-  const stok=parseInt(document.getElementById('inp-stok').value);
-  const icon=document.getElementById('inp-icon').value.trim()||'📦';
-  const kat=document.getElementById('inp-kat-produk').value;
-  const warn=parseInt(document.getElementById('inp-warn').value)||10;
+  const {nama,harga,stok,icon,kategori,warnStok}=getFormProdukPayload();
   const editId=document.getElementById('inp-edit-id').value;
   if(!nama||isNaN(harga)||isNaN(stok)){showToast('⚠️ Nama, harga & stok wajib diisi!');return;}
   if(harga<=0||stok<0){showToast('⚠️ Harga/stok tidak valid');return;}
   const data=ld(K.P)||[];
   if(editId){
     const idx=data.findIndex(p=>p.id===editId);
-    if(idx>=0) data[idx]={...data[idx],nama,harga,stok,icon,kategori:kat,warnStok:warn};
+    if(idx>=0) data[idx]={...data[idx],nama,harga,stok,icon,kategori,warnStok};
     cancelEdit();
   } else {
-    const ids=data.map(p=>parseInt(p.id.replace('P',''))).filter(n=>!isNaN(n));
-    const maxId=ids.length?Math.max(...ids):0;
-    data.push({id:'P'+String(maxId+1).padStart(3,'0'),nama,harga,stok,icon,kategori:kat,warnStok:warn});
+    data.push({id:nextProdukId(data),nama,harga,stok,icon,kategori,warnStok});
   }
-  sv(K.P,data); clearForm();
+  sv(K.P,data);
+  syncKategoriDariProduk(data);
+  clearForm();
   showToast('✅ Produk berhasil disimpan!');
-  renderAdmin(); renderProducts();
+  refreshAllViews();
 }
 
 function clearForm(){
@@ -1006,6 +1339,8 @@ function clearForm(){
   document.getElementById('inp-kat-produk').value='';
   document.getElementById('emoji-suggestions').innerHTML='';
   document.getElementById('form-produk-title').textContent='➕ Tambah Produk';
+  updateAutoMetaHint();
+  setAdvancedFields(false);
 }
 
 function editProduk(id){
@@ -1020,6 +1355,8 @@ function editProduk(id){
   document.getElementById('inp-edit-id').value=p.id;
   document.getElementById('btn-cancel-edit').style.display='block';
   document.getElementById('form-produk-title').textContent='✏️ Edit Produk: '+p.nama;
+  setAdvancedFields(true);
+  updateAutoMetaHint();
   document.getElementById('inp-nama').scrollIntoView({behavior:'smooth',block:'center'});
   showToast('✏️ Mode edit: '+p.nama);
 }
@@ -1034,7 +1371,7 @@ function deleteProduk(id){
   if(!confirm('Hapus produk ini?')) return;
   sv(K.P,(ld(K.P)||[]).filter(p=>p.id!==id));
   delete cart[id];
-  renderAdmin(); renderProducts(); renderCart();
+  refreshAllViews();
   showToast('🗑 Produk dihapus');
 }
 
@@ -1054,7 +1391,7 @@ function deleteKategori(k){
   if(!confirm('Hapus kategori "'+k+'"?')) return;
   sv(K.KAT,(ld(K.KAT)||[]).filter(x=>x!==k));
   if(activeKat===k) activeKat='Semua';
-  renderAdmin(); renderKatFilter();
+  refreshAllViews();
   showToast('🗑 Kategori "'+k+'" dihapus');
 }
 
@@ -1087,6 +1424,8 @@ seedData();
 initTheme();
 renderKatFilter();
 renderProducts();
+setAdvancedFields(false);
+updateAutoMetaHint();
 
 // ── PWA INSTALL PROMPT ──
 let deferredPrompt=null;
